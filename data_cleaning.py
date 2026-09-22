@@ -112,6 +112,36 @@ def identificar_nomes_de_teste(dados):
     return dados[regra].copy()
 
 
+def identificar_telefones_com_prefixos_bloqueados(dados):
+    """Identifica telefones que começam com prefixos bloqueados."""
+    if "Telefone" not in dados.columns:
+        raise ValueError("Coluna 'Telefone' não encontrada.")
+
+    prefixos_bloqueados = (
+        "55539999",
+        "555599999",
+        "55519999",
+        "555399999",
+        "555444",
+        "555555",
+        "99999",
+    )
+
+    telefone = (
+        dados["Telefone"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    regra = telefone.str.startswith(
+        prefixos_bloqueados,
+        na=False
+    )
+
+    return dados[regra].copy()
+
+
 def identificar_nomes_suspeitos(dados):
     """Mantém a regra original: números, nomes curtos ou teste/test."""
     if "Razão social" not in dados.columns:

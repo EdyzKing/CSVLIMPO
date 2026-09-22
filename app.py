@@ -12,6 +12,7 @@ from data_cleaning import (
     identificar_nomes_numericos,
     identificar_nomes_muito_curtos,
     identificar_nomes_de_teste,
+    identificar_telefones_com_prefixos_bloqueados,
 )
 
 # =============================
@@ -510,6 +511,15 @@ else:
 
             conteudo = arquivo.getvalue()
 
+            if not conteudo.strip():
+
+                st.error(
+                    "O arquivo CSV está vazio. "
+                    "Envie um arquivo com cabeçalho e registros."
+                )
+
+                st.stop()
+
             try:
 
                 dados_original = pd.read_csv(
@@ -519,6 +529,14 @@ else:
                     dtype=str,
                     keep_default_na=False
                 )
+
+            except pd.errors.EmptyDataError:
+
+                st.error(
+                    "O arquivo CSV não possui colunas ou cabeçalho legível."
+                )
+
+                st.stop()
 
             except UnicodeDecodeError:
 
@@ -615,6 +633,11 @@ else:
                     value=False
                 )
 
+                remover_telefones_bloqueados = st.checkbox(
+                    "Remover telefones com prefixos bloqueados",
+                    value=False
+                )
+
             st.info(
                 "As opções da coluna à direita e a validação "
                 "oficial são desativadas por padrão porque podem "
@@ -638,6 +661,8 @@ else:
                     or remover_curtos
                     or remover_teste
                 )
+
+                precisa_telefone = remover_telefones_bloqueados
 
                 precisa_bairro = (
                     remover_sem_bairro
@@ -680,6 +705,16 @@ else:
                         "para a validação de bairros oficiais."
                     )
 
+                if (
+                    precisa_telefone
+                    and "Telefone" not in dados_original.columns
+                ):
+
+                    erros_colunas.append(
+                        "• 'Telefone' é necessária "
+                        "para remover prefixos telefônicos bloqueados."
+                    )
+
                 if erros_colunas:
 
                     st.error(
@@ -720,6 +755,10 @@ else:
                 )
 
                 removidos_teste = pd.DataFrame(
+                    columns=dados.columns
+                )
+
+                removidos_telefones_bloqueados = pd.DataFrame(
                     columns=dados.columns
                 )
 
@@ -826,7 +865,27 @@ else:
                     )
 
                 # ============================
-                # 7 - PADRONIZAR BAIRROS
+                # 7 - TELEFONES COM PREFIXOS BLOQUEADOS
+                # ============================
+
+                if remover_telefones_bloqueados:
+
+                    encontrados = (
+                        identificar_telefones_com_prefixos_bloqueados(
+                            dados
+                        )
+                    )
+
+                    removidos_telefones_bloqueados = (
+                        encontrados.copy()
+                    )
+
+                    dados = dados.drop(
+                        index=encontrados.index
+                    )
+
+                # ============================
+                # 8 - PADRONIZAR BAIRROS
                 # ============================
 
                 if padronizar:
@@ -842,6 +901,7 @@ else:
                     + len(removidos_numericos)
                     + len(removidos_curtos)
                     + len(removidos_teste)
+                    + len(removidos_telefones_bloqueados)
                 )
 
                 st.session_state[
@@ -869,6 +929,9 @@ else:
 
                     "teste":
                         removidos_teste,
+
+                    "telefones_bloqueados":
+                        removidos_telefones_bloqueados,
                 }
 
                 st.session_state[
@@ -895,6 +958,9 @@ else:
 
                     "teste":
                         len(removidos_teste),
+
+                    "telefones_bloqueados":
+                        len(removidos_telefones_bloqueados),
 
                     "removidos":
                         total_removidos,
@@ -972,6 +1038,8 @@ if (
 
             "Nome contendo TESTE/TEST",
 
+            "Telefone com prefixo bloqueado",
+
         ],
 
         "Registros encontrados/removidos": [
@@ -987,6 +1055,8 @@ if (
             stats["curtos"],
 
             stats["teste"],
+
+            stats["telefones_bloqueados"],
 
         ],
     })
@@ -1039,6 +1109,12 @@ if (
             "teste",
             "🧪 BAIXAR NOMES COM TESTE/TEST",
             "registros_nomes_teste.csv"
+        ),
+
+        (
+            "telefones_bloqueados",
+            "📞 BAIXAR TELEFONES COM PREFIXO BLOQUEADO",
+            "registros_telefones_prefixos_bloqueados.csv"
         ),
     ]
 
