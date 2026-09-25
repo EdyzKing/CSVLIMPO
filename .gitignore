@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Ambientes virtuais
+venv/
+.venv/
+env/
+
+# Arquivos CSV com dados
+*.csv
+
+# Arquivos temporários
+*.tmp
+*.temp
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
