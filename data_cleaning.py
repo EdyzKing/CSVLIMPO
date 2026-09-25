@@ -1,4 +1,180 @@
+import re
+import unicodedata
+from difflib import SequenceMatcher
+
 import pandas as pd
+
+
+def _normalizar_nome_coluna(coluna):
+    """Converte nomes de colunas para uma forma estável e comparável."""
+    texto = str(coluna).strip().lower()
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(
+        c for c in texto
+        if not unicodedata.combining(c)
+    )
+    texto = re.sub(r"[^a-z0-9]+", " ", texto)
+    return texto.strip()
+
+
+def normalizar_colunas_para_padrao(dados):
+    """Mapeia colunas comuns para os nomes esperados pelo sistema."""
+    dados = dados.copy()
+
+    aliases = {
+        "Razão social": {
+            "razao social",
+            "raza social",
+            "razao",
+            "nome da empresa",
+            "nome empresa",
+            "nome da fantasia",
+            "nome fantasia",
+            "empresa",
+            "cliente",
+            "nome",
+            "nome cliente",
+            "pessoa",
+            "pessoas",
+            "nome pessoa",
+        },
+        "Bairro": {
+            "bairro",
+            "bairros",
+            "bairro cliente",
+            "bairro empresa",
+            "bairro da empresa",
+            "localidade",
+        },
+        "Cidade": {
+            "cidade",
+            "cidades",
+            "cidade cliente",
+            "cidade empresa",
+            "municipio",
+            "municipio cliente",
+            "localidade cidade",
+        },
+        "Telefone": {
+            "telefone",
+            "telefones",
+            "tel",
+            "fone",
+            "celular",
+            "celular principal",
+            "telefone principal",
+            "telefone 1",
+            "telefone1",
+            "telefone_1",
+            "numero telefone",
+            "numero celular",
+        },
+        "colaborador": {
+            "colaborador",
+            "responsavel",
+            "analista",
+            "usuario",
+        },
+        "Status": {
+            "status",
+            "situacao",
+            "situacao da instalacao",
+            "situacao instalacao",
+        },
+    }
+
+    mapeamento = {}
+    campos_ja_mapados = set()
+    colunas_norm = {
+        _normalizar_nome_coluna(col): col
+        for col in dados.columns
+    }
+
+    for nome_esperado, variantes in aliases.items():
+        for variacao in variantes:
+            chave = _normalizar_nome_coluna(variacao)
+            if chave in colunas_norm:
+                coluna = colunas_norm[chave]
+                if (
+                    coluna not in mapeamento
+                    and nome_esperado not in campos_ja_mapados
+                ):
+                    mapeamento[coluna] = nome_esperado
+                    campos_ja_mapados.add(nome_esperado)
+                break
+
+    # Prioriza colunas que mencionam explicitamente Bairro. Isso evita que
+    # nomes como "Bairro do cliente" sejam confundidos com Razao social.
+    if "Bairro" not in campos_ja_mapados:
+        for coluna in list(dados.columns):
+            if coluna in mapeamento:
+                continue
+
+            nome_norm = _normalizar_nome_coluna(coluna)
+            if "bairro" in nome_norm.split():
+                mapeamento[coluna] = "Bairro"
+                campos_ja_mapados.add("Bairro")
+                break
+
+    for nome_esperado, variantes in aliases.items():
+        if nome_esperado in campos_ja_mapados:
+            continue
+
+        for coluna in list(dados.columns):
+            if coluna in mapeamento:
+                continue
+            nome_norm = _normalizar_nome_coluna(coluna)
+            if (
+                "bairro" in nome_norm.split()
+                and nome_esperado != "Bairro"
+            ):
+                continue
+            if any(
+                _normalizar_nome_coluna(variante) in nome_norm
+                for variante in variantes
+            ):
+                mapeamento[coluna] = nome_esperado
+                campos_ja_mapados.add(nome_esperado)
+                break
+
+    # Aceita pequenos erros de digitacao no campo Bairro, sem aplicar
+    # correspondencia aproximada aos demais campos.
+    if "Bairro" not in campos_ja_mapados:
+        for coluna in list(dados.columns):
+            if coluna in mapeamento:
+                continue
+
+            nome_norm = _normalizar_nome_coluna(coluna)
+            palavras = nome_norm.split()
+            similaridade = max(
+                (
+                    SequenceMatcher(None, palavra, "bairro").ratio()
+                    for palavra in palavras
+                ),
+                default=0,
+            )
+
+            if similaridade >= 0.78:
+                mapeamento[coluna] = "Bairro"
+                campos_ja_mapados.add("Bairro")
+                break
+
+    if mapeamento:
+        dados = dados.rename(columns=mapeamento)
+
+    dados.attrs["mapeamento_colunas"] = {
+        nome_padrao: nome_original
+        for nome_original, nome_padrao in mapeamento.items()
+    }
+
+    return dados
+
+
+def obter_mapeamento_colunas(colunas):
+    """Retorna o mapa entre cabecalhos originais e nomes internos."""
+    dados = pd.DataFrame(columns=list(colunas))
+    normalizados = normalizar_colunas_para_padrao(dados)
+    return normalizados.attrs.get("mapeamento_colunas", {})
 
 
 def padronizar_bairros(dados):

@@ -1,4 +1,5 @@
 from pathlib import Path
+from difflib import SequenceMatcher
 import io
 import re
 import pandas as pd
@@ -6,6 +7,8 @@ import unicodedata
 import streamlit as st
 
 from data_cleaning import (
+    normalizar_colunas_para_padrao,
+    obter_mapeamento_colunas,
     padronizar_bairros,
     separar_registros_sem_bairro,
     separar_nomes_iniciados_por_numero,
@@ -14,6 +17,14 @@ from data_cleaning import (
     identificar_nomes_de_teste,
     identificar_telefones_com_prefixos_bloqueados,
 )
+from tmd_calculation import (
+    calcular_tmd_comparativo_dos_csvs,
+    calcular_tmd_dos_csvs,
+    corrigir_sessoes_com_logouts_manuais,
+    diagnosticar_tmd,
+    identificar_colaboradores_sem_logout,
+)
+
 
 # =============================
 # CONFIGURAÇÃO DA PÁGINA
@@ -22,6 +33,154 @@ st.set_page_config(
     page_title="CSV DATA CLEANER",
     page_icon="🧹",
     layout="wide"
+)
+
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+    :root {
+        --bg: #0f172a;
+        --panel: rgba(15, 23, 42, 0.72);
+        --panel-strong: #111827;
+        --card: rgba(17, 24, 39, 0.9);
+        --soft: #1e293b;
+        --muted: #94a3b8;
+        --text: #e2e8f0;
+        --primary: #38bdf8;
+        --primary-strong: #0ea5e9;
+        --green: #34d399;
+        --yellow: #fbbf24;
+        --red: #f87171;
+        --shadow: 0 18px 40px rgba(15, 23, 42, 0.35);
+    }
+
+    html, body, [data-testid="stAppViewContainer"] {
+        background: linear-gradient(135deg, #020817 0%, #0f172a 45%, #111827 100%);
+        color: var(--text);
+        font-family: 'Inter', sans-serif;
+    }
+
+    [data-testid="stHeader"] {
+        background: rgba(15, 23, 42, 0.25);
+        backdrop-filter: blur(10px);
+    }
+
+    .stApp {
+        background: transparent;
+    }
+
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+    }
+
+    h1, h2, h3, h4 {
+        color: #f8fafc !important;
+        letter-spacing: -0.03em;
+    }
+
+    .stTitle {
+        font-weight: 800;
+        font-size: 2.5rem !important;
+        margin-bottom: 0.25rem !important;
+    }
+
+    .stCaption {
+        color: var(--muted) !important;
+        font-size: 1rem !important;
+    }
+
+    .stRadio > div {
+        background: rgba(15, 23, 42, 0.75);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 16px;
+        padding: 0.5rem 0.75rem;
+        box-shadow: var(--shadow);
+    }
+
+    .stRadio [role="radio"] {
+        border-color: rgba(56, 189, 248, 0.5) !important;
+    }
+
+    .stRadio [data-baseweb="radio-group"] label {
+        color: var(--text);
+        font-weight: 600;
+    }
+
+    .stButton > button {
+        border: none;
+        border-radius: 12px;
+        background: linear-gradient(135deg, var(--primary) 0%, var(--primary-strong) 100%);
+        color: #03111d;
+        font-weight: 800;
+        padding: 0.75rem 1.2rem;
+        box-shadow: 0 12px 24px rgba(14, 165, 233, 0.3);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 18px 28px rgba(14, 165, 233, 0.38);
+    }
+
+    .stDownloadButton > button {
+        border-radius: 12px;
+        border: 1px solid rgba(56, 189, 248, 0.4);
+        background: rgba(14, 165, 233, 0.12);
+        color: var(--text);
+        font-weight: 700;
+    }
+
+    .stFileUploader > div {
+        background: rgba(15, 23, 42, 0.7);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 16px;
+    }
+
+    .stDataFrame, .stDataFrame > div {
+        background: rgba(15, 23, 42, 0.7) !important;
+        border-radius: 16px !important;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #f8fafc !important;
+        font-weight: 800 !important;
+    }
+
+    section[data-testid="stSidebar"] {
+        background: rgba(2, 6, 23, 0.8);
+        border-right: 1px solid rgba(148, 163, 184, 0.15);
+    }
+
+    .css-1d391kg, .css-18e3th9 {
+        background: rgba(15, 23, 42, 0.7);
+    }
+
+    .stAlert {
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+    }
+
+    .stSuccess {
+        border-left: 4px solid var(--green);
+    }
+
+    .stError {
+        border-left: 4px solid var(--red);
+    }
+
+    .stWarning {
+        border-left: 4px solid var(--yellow);
+    }
+
+    .stInfo {
+        border-left: 4px solid var(--primary);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 st.title("🧹 CSV DATA CLEANER")
@@ -107,10 +266,7 @@ def carregar_bairros_validos():
 
 def validar_bairros_por_cidade(dados):
 
-    if (
-        "Cidade" not in dados.columns
-        or "Bairro" not in dados.columns
-    ):
+    if "Bairro" not in dados.columns:
         return (
             dados.copy(),
             pd.DataFrame(columns=dados.columns)
@@ -124,45 +280,104 @@ def validar_bairros_por_cidade(dados):
             pd.DataFrame(columns=dados.columns)
         )
 
-    chaves_validas = set(
-        zip(
-            validos["Cidade_cmp"],
-            validos["Bairro_cmp"]
+    def melhor_correspondencia(valor, opcoes, limite):
+        if not valor:
+            return None
+
+        melhor = max(
+            (
+                (SequenceMatcher(None, valor, chave).ratio(), original)
+                for chave, original in opcoes
+            ),
+            default=(0, None)
         )
-    )
 
-    cidade_cmp = dados["Cidade"].apply(
-        normalizar_para_comparacao
-    )
+        if melhor[0] >= limite:
+            return melhor[1]
+        return None
 
-    bairro_cmp = dados["Bairro"].apply(
-        normalizar_para_comparacao
-    )
+    pares_por_cidade = {}
+    cidades = []
 
-    preenchido = bairro_cmp != ""
+    for registro in validos.itertuples(index=False):
+        pares_por_cidade.setdefault(
+            registro.Cidade_cmp,
+            []
+        ).append((registro.Bairro_cmp, registro.Bairro))
 
-    chave = list(
-        zip(
-            cidade_cmp,
-            bairro_cmp
+        if not any(
+            chave == registro.Cidade_cmp
+            for chave, _ in cidades
+        ):
+            cidades.append(
+                (registro.Cidade_cmp, registro.Cidade)
+            )
+
+    dados_corrigidos = dados.copy()
+    indices_invalidos = []
+
+    for indice, registro in dados.iterrows():
+        bairro_cmp = normalizar_para_comparacao(
+            registro["Bairro"]
         )
-    )
 
-    invalido = preenchido & pd.Series(
-        [
-            k not in chaves_validas
-            for k in chave
-        ],
-        index=dados.index
-    )
+        if not bairro_cmp:
+            continue
 
-    registros_invalidos = dados.loc[
-        invalido
-    ].copy()
+        if "Cidade" in dados.columns:
+            cidade_cmp = normalizar_para_comparacao(
+                registro["Cidade"]
+            )
 
-    registros_validos = dados.loc[
-        ~invalido
-    ].copy()
+            cidade_oficial = melhor_correspondencia(
+                cidade_cmp,
+                cidades,
+                limite=0.86
+            )
+
+            if cidade_oficial is None:
+                indices_invalidos.append(indice)
+                continue
+
+            cidade_chave = normalizar_para_comparacao(
+                cidade_oficial
+            )
+
+            bairro_oficial = melhor_correspondencia(
+                bairro_cmp,
+                pares_por_cidade[cidade_chave],
+                limite=0.78
+            )
+
+            if bairro_oficial is None:
+                indices_invalidos.append(indice)
+                continue
+
+            dados_corrigidos.at[indice, "Cidade"] = cidade_oficial
+            dados_corrigidos.at[indice, "Bairro"] = bairro_oficial
+        else:
+            bairros = [
+                (registro.Bairro_cmp, registro.Bairro)
+                for registro in validos.itertuples(index=False)
+            ]
+
+            bairro_oficial = melhor_correspondencia(
+                bairro_cmp,
+                bairros,
+                limite=0.78
+            )
+
+            if bairro_oficial is None:
+                indices_invalidos.append(indice)
+                continue
+
+            dados_corrigidos.at[indice, "Bairro"] = bairro_oficial
+
+    registros_invalidos = dados.loc[indices_invalidos].copy()
+
+    registros_validos = dados_corrigidos.drop(
+        index=indices_invalidos
+    ).copy()
 
     return (
         registros_validos,
@@ -171,323 +386,356 @@ def validar_bairros_por_cidade(dados):
 
 
 # ============================================================
-# FUNÇÃO - AUDITORIA DE INSTALAÇÕES
+# UTILITÁRIO DE LEITURA CSV
 # ============================================================
 
-def realizar_auditoria_instalacoes(arquivo):
+def detectar_separador_csv(conteudo):
+    """Detecta o separador do CSV usando a contagem de delimitadores."""
+    amostra = conteudo[:4096].decode("utf-8", errors="ignore")
+    if amostra.count(";") >= amostra.count(","):
+        return ";"
+    return ","
 
-    conteudo = arquivo.getvalue()
 
-    # Tenta UTF-8
-    try:
+def restaurar_nomes_originais(dados, mapeamento, colunas_originais=None):
+    """Retorna os nomes originais depois do processamento interno."""
+    renomear = {
+        nome_padrao: nome_original
+        for nome_padrao, nome_original in mapeamento.items()
+        if nome_padrao in dados.columns
+        and nome_original not in dados.columns
+    }
+    dados = dados.rename(columns=renomear)
 
-        dados = pd.read_csv(
-            io.BytesIO(conteudo),
-            sep=";",
-            encoding="utf-8-sig",
-            dtype=str,
-            keep_default_na=False
+    if colunas_originais:
+        colunas_presentes = [
+            coluna
+            for coluna in colunas_originais
+            if coluna in dados.columns
+        ]
+        colunas_extras = [
+            coluna
+            for coluna in dados.columns
+            if coluna not in colunas_presentes
+        ]
+        dados = dados.reindex(
+            columns=colunas_presentes + colunas_extras
         )
 
-    except UnicodeDecodeError:
+    return dados
 
-        dados = pd.read_csv(
-            io.BytesIO(conteudo),
-            sep=";",
-            encoding="latin1",
-            dtype=str,
-            keep_default_na=False
+
+# ============================================================
+# CÁLCULO DE TMD
+# ============================================================
+
+def unificar_tmd_por_equipe(resultado_diario):
+    if resultado_diario is None or resultado_diario.empty:
+        return pd.DataFrame(columns=["Equipe", "TMD médio do período"])
+
+    dados = resultado_diario.copy()
+    dados["_segundos"] = pd.to_timedelta(
+        dados["TMD"], errors="coerce"
+    ).dt.total_seconds()
+    resumo = (
+        dados.dropna(subset=["_segundos"])
+        .groupby("Equipe", as_index=False)["_segundos"]
+        .sum()
+    )
+
+    def formatar(segundos):
+        segundos = max(0, int(round(segundos)))
+        horas, resto = divmod(segundos, 3600)
+        minutos, segundos = divmod(resto, 60)
+        return f"{horas:02d}:{minutos:02d}:{segundos:02d}"
+
+    resumo["TMD total do período"] = resumo["_segundos"].map(formatar)
+    return resumo[["Equipe", "TMD total do período"]]
+
+
+def formatar_logout_manual(valor):
+    digitos = re.sub(r"\D", "", str(valor))[:14]
+    partes = []
+    limites = (2, 2, 4, 2, 2, 2)
+    inicio = 0
+    for limite in limites:
+        parte = digitos[inicio:inicio + limite]
+        if not parte:
+            break
+        partes.append(parte)
+        inicio += limite
+
+    if len(partes) <= 3:
+        return "/".join(partes)
+    data = "/".join(partes[:3])
+    horario = ":".join(partes[3:])
+    return f"{data} {horario}"
+
+
+def aplicar_mascara_logout_manual(chave):
+    st.session_state[chave] = formatar_logout_manual(
+        st.session_state.get(chave, "")
+    )
+
+
+def renderizar_ajustes_logout(sem_logout_editor):
+    st.subheader("Adicionar Logouts manualmente")
+    st.warning(
+        "Preencha os horários conhecidos e clique em recalcular. "
+        "Use DD/MM/AAAA HH:MM:SS."
+    )
+    valores_manuais = []
+    for indice, registro in sem_logout_editor.iterrows():
+        col1, col2, col3, col4 = st.columns([2.4, 2.2, 1.8, 2.4])
+        col1.text(registro["Agente"])
+        col2.text(registro["Fila"])
+        col3.text(registro["Login"])
+        chave_logout = (
+            "logout_manual_"
+            f"{registro['Agente']}_{registro['Fila']}_{indice}"
         )
-
-    dados.columns = dados.columns.str.strip()
-
-    # Verifica as colunas necessárias
-    colunas_faltantes = []
-
-    if "colaborador" not in dados.columns:
-        colunas_faltantes.append("colaborador")
-
-    if "Status" not in dados.columns:
-        colunas_faltantes.append("Status")
-
-    if colunas_faltantes:
-
-        return None, (
-            "O arquivo não possui as colunas necessárias: "
-            + ", ".join(colunas_faltantes)
+        valor = col4.text_input(
+            "Logout manual",
+            value=st.session_state.get(chave_logout, ""),
+            placeholder="DD/MM/AAAA HH:MM:SS",
+            key=chave_logout,
+            on_change=aplicar_mascara_logout_manual,
+            args=(chave_logout,),
+            label_visibility="collapsed",
         )
+        valores_manuais.append({
+            "Agente": registro["Agente"],
+            "Fila": registro["Fila"],
+            "Login": registro["Login"],
+            "Direção": registro["Direção"],
+            "Status": registro["Status"],
+            "Logout manual": valor,
+        })
+    return pd.DataFrame(valores_manuais)
 
-    # Normaliza os campos para comparação
-    colaborador = (
-        dados["colaborador"]
-        .astype(str)
-        .str.strip()
+
+def executar_tmd():
+    st.header("Cálculo automático de TMD")
+    st.caption(
+        "Calcula o TMD das filas oficiais de Cobrança e Retenção."
     )
 
-    status = (
-        dados["Status"]
-        .astype(str)
-        .str.strip()
-        .str.upper()
-    )
-
-    # Considera somente status FINALIZADA
-    finalizadas = dados[
-        status == "FINALIZADA"
-    ].copy()
-
-    # Remove colaborador vazio
-    finalizadas = finalizadas[
-        finalizadas["colaborador"]
-        .astype(str)
-        .str.strip()
-        .ne("")
-    ]
-
-    # Agrupamento por colaborador
-    auditoria = (
-        finalizadas
-        .groupby("colaborador")
-        .size()
-        .reset_index(
-            name="Instalações finalizadas"
-        )
-    )
-
-    # Ordena do maior para o menor
-    auditoria = auditoria.sort_values(
-        by="Instalações finalizadas",
-        ascending=False
-    ).reset_index(drop=True)
-
-    return {
-        "dados": dados,
-        "finalizadas": finalizadas,
-        "auditoria": auditoria
-    }, None
-
-
-# ============================================================
-# MENU PRINCIPAL
-# ============================================================
-
-st.header("📌 Ferramentas")
-
-opcao = st.radio(
-    "Escolha o que deseja fazer:",
-    [
-        "🧹 Limpeza de base de clientes",
-        "📊 Auditoria de instalações finalizadas"
-    ],
-    horizontal=True
-)
-
-st.divider()
-
-
-# ============================================================
-# AUDITORIA DE INSTALAÇÕES
-# ============================================================
-
-if opcao == "📊 Auditoria de instalações finalizadas":
-
-    st.subheader(
-        "📊 Auditoria de instalações finalizadas por colaborador"
-    )
-
-    st.write(
-        "Envie o CSV das instalações. O sistema irá contar "
-        "quantas instalações com status **Finalizada** cada "
-        "colaborador realizou."
-    )
-
-    arquivo_auditoria = st.file_uploader(
-        "Selecione o CSV de instalações",
+    sessoes = st.file_uploader(
+        "Selecionar Sessões em Filas",
         type=["csv"],
-        help=(
-            "O arquivo deve possuir as colunas "
-            "'colaborador' e 'Status'."
-        ),
-        key="arquivo_auditoria"
+        key="arquivo_tmd_sessoes",
+    )
+    pausas = st.file_uploader(
+        "Selecionar Pausas",
+        type=["csv"],
+        key="arquivo_tmd_pausas",
     )
 
-    if arquivo_auditoria is not None:
+    if sessoes is not None:
+        st.success(f"Sessões em Filas carregadas: {sessoes.name}")
+    if pausas is not None:
+        st.success(f"Pausas carregadas: {pausas.name}")
+
+    if sessoes is not None and pausas is not None:
+        with st.expander("Verificação dos arquivos carregados"):
+            try:
+                diagnostico = diagnosticar_tmd(
+                    sessoes.getvalue(), pausas.getvalue()
+                )
+                st.write(
+                    f"Sessões lidas: {diagnostico['sessoes_lidas']} | "
+                    f"Pausas lidas: {diagnostico['pausas_lidas']} | "
+                    f"Sessões válidas: {diagnostico['intervalos_validos']}"
+                )
+                st.write("Filas encontradas:", diagnostico["filas"])
+                st.write(
+                    "Direções encontradas:",
+                    diagnostico["direcoes_sessoes"],
+                )
+                st.dataframe(
+                    diagnostico["amostra_sessoes"],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            except ValueError as erro:
+                st.error(f"Não foi possível ler os arquivos: {erro}")
 
         try:
-
-            resultado, erro = realizar_auditoria_instalacoes(
-                arquivo_auditoria
+            sessoes_lidas = pd.read_csv(
+                io.BytesIO(sessoes.getvalue()),
+                sep=detectar_separador_csv(sessoes.getvalue()),
+                dtype=str,
+                keep_default_na=False,
             )
+        except (ValueError, pd.errors.ParserError) as erro:
+            st.error(f"Não foi possível preparar os Logouts manuais: {erro}")
 
-            if erro:
-
-                st.error(erro)
-
-                st.info(
-                    "O arquivo precisa possuir exatamente "
-                    "as informações necessárias para a auditoria."
-                )
-
-            else:
-
-                dados_auditoria = resultado["dados"]
-                finalizadas = resultado["finalizadas"]
-                auditoria = resultado["auditoria"]
-
-                st.success(
-                    "Arquivo de auditoria carregado com sucesso!"
-                )
-
-                # ============================
-                # MÉTRICAS
-                # ============================
-
-                total_registros = len(
-                    dados_auditoria
-                )
-
-                total_finalizadas = len(
-                    finalizadas
-                )
-
-                total_colaboradores = len(
-                    auditoria
-                )
-
-                m1, m2, m3 = st.columns(3)
-
-                m1.metric(
-                    "Total de instalações",
-                    total_registros
-                )
-
-                m2.metric(
-                    "Instalações finalizadas",
-                    total_finalizadas
-                )
-
-                m3.metric(
-                    "Colaboradores",
-                    total_colaboradores
-                )
-
-                st.divider()
-
-                # ============================
-                # RESULTADO
-                # ============================
-
-                st.subheader(
-                    "🏆 Instalações finalizadas por colaborador"
-                )
-
-                if auditoria.empty:
-
-                    st.warning(
-                        "Nenhum registro com status 'Finalizada' "
-                        "e colaborador preenchido foi encontrado."
+    if st.button("Calcular TMD", type="primary", key="calcular_tmd"):
+        if sessoes is None or pausas is None:
+            st.warning("Selecione os dois arquivos CSV antes de calcular.")
+        else:
+            try:
+                comparativo, sem_logout = (
+                    calcular_tmd_comparativo_dos_csvs(
+                        sessoes.getvalue(),
+                        pausas.getvalue(),
+                        None,
                     )
+                )
+                st.session_state["resultado_tmd_comparativo"] = comparativo
+                st.session_state["colaboradores_sem_logout"] = sem_logout
+                resultado_diario = comparativo.rename(
+                    columns={"TMD corrigido": "TMD"}
+                )[["Data", "Equipe", "TMD"]]
+                st.session_state["resultado_tmd_diario"] = resultado_diario
+                st.session_state["resultado_tmd"] = unificar_tmd_por_equipe(
+                    resultado_diario
+                )
+                st.success("Processamento concluído.")
+            except (ValueError, TypeError) as erro:
+                st.error(f"Não foi possível calcular o TMD: {erro}")
 
-                else:
-
+    resultado = st.session_state.get("resultado_tmd")
+    comparativo = st.session_state.get("resultado_tmd_comparativo")
+    sem_logout = st.session_state.get("colaboradores_sem_logout")
+    if resultado is not None:
+        if resultado.empty:
+            st.warning(
+                "Nenhum resultado foi gerado. Verifique as colunas de data, "
+                "Login, Logout, Tempo Logado e os nomes das filas."
+            )
+        else:
+            st.subheader("Resultado do cálculo automático")
+            st.dataframe(resultado, use_container_width=True, hide_index=True)
+            resultado_diario = st.session_state.get("resultado_tmd_diario")
+            if resultado_diario is not None:
+                with st.expander("Ver resultado detalhado por dia"):
                     st.dataframe(
-                        auditoria,
+                        resultado_diario,
                         use_container_width=True,
-                        hide_index=True
+                        hide_index=True,
                     )
-
-                    # ============================
-                    # GRÁFICO
-                    # ============================
-
-                    st.subheader(
-                        "📈 Ranking de instalações finalizadas"
-                    )
-
-                    grafico = auditoria.set_index(
-                        "colaborador"
-                    )
-
-                    st.bar_chart(
-                        grafico[
-                            "Instalações finalizadas"
-                        ]
-                    )
-
-                    # ============================
-                    # DOWNLOAD
-                    # ============================
-
-                    st.divider()
-
-                    csv_auditoria = auditoria.to_csv(
-                        sep=";",
-                        index=False,
-                        encoding="utf-8-sig"
-                    )
-
-                    st.download_button(
-                        label=(
-                            "⬇️ BAIXAR AUDITORIA POR COLABORADOR"
-                        ),
-                        data=csv_auditoria,
-                        file_name=(
-                            "auditoria_instalacoes_finalizadas.csv"
-                        ),
-                        mime="text/csv",
-                        type="primary",
-                        use_container_width=True,
-                        key="download_auditoria"
-                    )
-
-                    # ============================
-                    # DETALHAMENTO
-                    # ============================
-
-                    with st.expander(
-                        "📋 Ver instalações finalizadas"
-                    ):
-
-                        st.dataframe(
-                            finalizadas,
-                            use_container_width=True,
-                            hide_index=True
-                        )
-
-                        csv_finalizadas = (
-                            finalizadas.to_csv(
-                                sep=";",
-                                index=False,
-                                encoding="utf-8-sig"
+            if comparativo is not None:
+                st.subheader("Comparativo do cálculo")
+                st.caption(
+                    "Sem correção: filas e registros duplicados são somados. "
+                    "Corrigido: sessões simultâneas e pausas duplicadas são unidas."
+                )
+                st.dataframe(
+                    comparativo,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.download_button(
+                    "Baixar comparativo TMD",
+                    data=comparativo.to_csv(
+                        sep=";", index=False, encoding="utf-8-sig"
+                    ),
+                    file_name="tmd_comparativo.csv",
+                    mime="text/csv",
+                    key="download_tmd_comparativo",
+                )
+            if sem_logout is not None and not sem_logout.empty:
+                st.subheader("Correção manual para Cobrança e Retenção")
+                st.warning(
+                    f"{sem_logout['Agente'].nunique()} colaborador(es) "
+                    "dos setores Cobrança/Retenção possuem Saída sem Logout."
+                )
+                st.dataframe(
+                    sem_logout,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                ajustes_manuais = renderizar_ajustes_logout(
+                    sem_logout.copy()
+                )
+                if st.button(
+                    "Recalcular TMD com os Logouts informados",
+                    type="primary",
+                    key="recalcular_tmd_logouts",
+                ):
+                    try:
+                        comparativo_atualizado, sem_logout_atualizado = (
+                            calcular_tmd_comparativo_dos_csvs(
+                                sessoes.getvalue(),
+                                pausas.getvalue(),
+                                ajustes_manuais,
                             )
                         )
-
-                        st.download_button(
-                            label=(
-                                "⬇️ BAIXAR INSTALAÇÕES FINALIZADAS"
-                            ),
-                            data=csv_finalizadas,
-                            file_name=(
-                                "instalacoes_finalizadas.csv"
-                            ),
-                            mime="text/csv",
-                            use_container_width=True,
-                            key="download_finalizadas"
+                        sessoes_corrigidas = (
+                            corrigir_sessoes_com_logouts_manuais(
+                                sessoes.getvalue(),
+                                ajustes_manuais,
+                            )
                         )
-
-        except Exception as erro:
-
-            st.error(
-                f"Não foi possível processar o arquivo: {erro}"
+                        st.session_state[
+                            "sessoes_corrigidas_manualmente"
+                        ] = sessoes_corrigidas
+                        st.session_state[
+                            "resultado_tmd_comparativo"
+                        ] = comparativo_atualizado
+                        st.session_state[
+                            "colaboradores_sem_logout"
+                        ] = sem_logout_atualizado
+                        resultado_diario_atualizado = (
+                            comparativo_atualizado.rename(
+                                columns={"TMD corrigido": "TMD"}
+                            )[["Data", "Equipe", "TMD"]]
+                        )
+                        st.session_state[
+                            "resultado_tmd_diario"
+                        ] = resultado_diario_atualizado
+                        st.session_state["resultado_tmd"] = (
+                            unificar_tmd_por_equipe(
+                                resultado_diario_atualizado
+                            )
+                        )
+                        st.success("TMD recalculado com os Logouts informados.")
+                    except (ValueError, TypeError) as erro:
+                        st.error(f"Não foi possível recalcular o TMD: {erro}")
+                sessoes_corrigidas = st.session_state.get(
+                    "sessoes_corrigidas_manualmente"
+                )
+                if sessoes_corrigidas is not None:
+                    st.download_button(
+                        "Baixar sessões corrigidas manualmente",
+                        data=sessoes_corrigidas.to_csv(
+                            sep=";", index=False, encoding="utf-8-sig"
+                        ),
+                        file_name="sessoes_corrigidas_manualmente.csv",
+                        mime="text/csv",
+                        key="download_sessoes_corrigidas",
+                    )
+                st.download_button(
+                    "Baixar lista de colaboradores sem Logout",
+                    data=sem_logout.to_csv(
+                        sep=";", index=False, encoding="utf-8-sig"
+                    ),
+                    file_name="colaboradores_sem_logout.csv",
+                    mime="text/csv",
+                    key="download_sem_logout",
+                )
+            st.download_button(
+                "Baixar resultado TMD",
+                data=resultado.to_csv(
+                    sep=";", index=False, encoding="utf-8-sig"
+                ),
+                file_name="tmd_diario.csv",
+                mime="text/csv",
+                key="download_tmd",
             )
+
+    st.divider()
+
+
+executar_tmd()
 
 
 # ============================================================
 # LIMPEZA DE BASE
 # ============================================================
 
-else:
-
+def executar_limpeza():
     st.header("🧹 Limpeza de Base CSV")
 
     st.caption(
@@ -520,11 +768,13 @@ else:
 
                 st.stop()
 
+            separador = detectar_separador_csv(conteudo)
+
             try:
 
                 dados_original = pd.read_csv(
                     io.BytesIO(conteudo),
-                    sep=";",
+                    sep=separador,
                     encoding="utf-8-sig",
                     dtype=str,
                     keep_default_na=False
@@ -542,14 +792,19 @@ else:
 
                 dados_original = pd.read_csv(
                     io.BytesIO(conteudo),
-                    sep=";",
+                    sep=separador,
                     encoding="latin1",
                     dtype=str,
                     keep_default_na=False
                 )
 
-            dados_original.columns = (
-                dados_original.columns.str.strip()
+            dados_original.columns = dados_original.columns.str.strip()
+            colunas_originais = list(dados_original.columns)
+            dados_original = normalizar_colunas_para_padrao(
+                dados_original
+            )
+            mapeamento_colunas_saida = obter_mapeamento_colunas(
+                colunas_originais
             )
 
             st.success(
@@ -562,7 +817,7 @@ else:
 
                 st.write(
                     ", ".join(
-                        dados_original.columns.tolist()
+                        colunas_originais
                     )
                 )
 
@@ -591,6 +846,8 @@ else:
                 "Marque as operações que deseja aplicar:"
             )
 
+            pode_validar_bairros = "Bairro" in dados_original.columns
+
             c1, c2 = st.columns(2)
 
             with c1:
@@ -613,8 +870,19 @@ else:
                 validar_bairros = st.checkbox(
                     "Validar bairros contra a base oficial "
                     "(Cidade + Bairro)",
-                    value=False
+                    value=False,
+                    disabled=not pode_validar_bairros,
+                    help=(
+                        "Com Cidade, valida a combinação Cidade + Bairro. "
+                        "Sem Cidade, valida apenas o Bairro."
+                    )
                 )
+
+                if not pode_validar_bairros:
+                    st.caption(
+                        "Validação oficial indisponível: o arquivo não "
+                        "possui a coluna Bairro."
+                    )
 
             with c2:
 
@@ -670,8 +938,6 @@ else:
                     or validar_bairros
                 )
 
-                precisa_cidade = validar_bairros
-
                 if (
                     precisa_razao
                     and "Razão social"
@@ -692,17 +958,6 @@ else:
                     erros_colunas.append(
                         "• 'Bairro' é necessária "
                         "para as regras de limpeza/padronização."
-                    )
-
-                if (
-                    precisa_cidade
-                    and "Cidade"
-                    not in dados_original.columns
-                ):
-
-                    erros_colunas.append(
-                        "• 'Cidade' é necessária "
-                        "para a validação de bairros oficiais."
                     )
 
                 if (
@@ -904,6 +1159,48 @@ else:
                     + len(removidos_telefones_bloqueados)
                 )
 
+                dados = restaurar_nomes_originais(
+                    dados,
+                    mapeamento_colunas_saida,
+                    colunas_originais
+                )
+
+                removidos_sem_bairro = restaurar_nomes_originais(
+                    removidos_sem_bairro,
+                    mapeamento_colunas_saida,
+                    colunas_originais
+                )
+                removidos_bairros_invalidos = restaurar_nomes_originais(
+                    removidos_bairros_invalidos,
+                    mapeamento_colunas_saida,
+                    colunas_originais
+                )
+                removidos_inicio_numero = restaurar_nomes_originais(
+                    removidos_inicio_numero,
+                    mapeamento_colunas_saida,
+                    colunas_originais
+                )
+                removidos_numericos = restaurar_nomes_originais(
+                    removidos_numericos,
+                    mapeamento_colunas_saida,
+                    colunas_originais
+                )
+                removidos_curtos = restaurar_nomes_originais(
+                    removidos_curtos,
+                    mapeamento_colunas_saida,
+                    colunas_originais
+                )
+                removidos_teste = restaurar_nomes_originais(
+                    removidos_teste,
+                    mapeamento_colunas_saida,
+                    colunas_originais
+                )
+                removidos_telefones_bloqueados = restaurar_nomes_originais(
+                    removidos_telefones_bloqueados,
+                    mapeamento_colunas_saida,
+                    colunas_originais
+                )
+
                 st.session_state[
                     "dados_limpos"
                 ] = dados
@@ -980,13 +1277,15 @@ else:
             )
 
 
+executar_limpeza()
+
+
 # ============================================================
 # RESULTADO DA LIMPEZA
 # ============================================================
 
 if (
-    opcao == "🧹 Limpeza de base de clientes"
-    and "dados_limpos" in st.session_state
+    "dados_limpos" in st.session_state
 ):
 
     dados_limpos = (
