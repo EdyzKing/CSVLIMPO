@@ -30,163 +30,175 @@ from tmd_calculation import (
 # CONFIGURAÇÃO DA PÁGINA
 # =============================
 st.set_page_config(
-    page_title="CSV DATA CLEANER",
+    page_title="CSV Data Cleaner",
     page_icon="🧹",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap');
 
     :root {
-        --bg: #0f172a;
-        --panel: rgba(15, 23, 42, 0.72);
-        --panel-strong: #111827;
-        --card: rgba(17, 24, 39, 0.9);
-        --soft: #1e293b;
-        --muted: #94a3b8;
-        --text: #e2e8f0;
-        --primary: #38bdf8;
-        --primary-strong: #0ea5e9;
-        --green: #34d399;
-        --yellow: #fbbf24;
-        --red: #f87171;
-        --shadow: 0 18px 40px rgba(15, 23, 42, 0.35);
+        --bg: #0b1020;
+        --surface: #121a2e;
+        --surface-2: #18223b;
+        --border: rgba(148, 163, 184, 0.14);
+        --text: #e6ebf5;
+        --muted: #8b97b0;
+        --primary: #5eead4;
+        --primary-2: #22d3ee;
+        --green: #4ade80;
+        --yellow: #facc15;
+        --red: #fb7185;
+        --radius: 16px;
     }
 
-    html, body, [data-testid="stAppViewContainer"] {
-        background: linear-gradient(135deg, #020817 0%, #0f172a 45%, #111827 100%);
+    html, body, [class*="css"], [data-testid="stAppViewContainer"] {
+        font-family: 'Plus Jakarta Sans', sans-serif;
         color: var(--text);
-        font-family: 'Inter', sans-serif;
     }
-
-    [data-testid="stHeader"] {
-        background: rgba(15, 23, 42, 0.25);
-        backdrop-filter: blur(10px);
+    [data-testid="stAppViewContainer"] {
+        background:
+          radial-gradient(900px 500px at 90% -10%, rgba(34,211,238,0.10), transparent 60%),
+          radial-gradient(700px 400px at -10% 110%, rgba(94,234,212,0.08), transparent 60%),
+          var(--bg);
     }
+    [data-testid="stHeader"] { background: transparent; }
+    .block-container { padding-top: 2.2rem; padding-bottom: 4rem; max-width: 1200px; }
 
-    .stApp {
+    h1, h2, h3, h4 { color: #f8fafc !important; letter-spacing: -0.02em; font-weight: 800 !important; }
+    h2 { font-size: 1.6rem !important; }
+    h3 { font-size: 1.15rem !important; }
+    p, label, .stMarkdown { color: var(--text); }
+    [data-testid="stCaptionContainer"] { color: var(--muted) !important; }
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background: #080c18;
+        border-right: 1px solid var(--border);
+    }
+    section[data-testid="stSidebar"] .stRadio > div { gap: 0.35rem; }
+    section[data-testid="stSidebar"] .stRadio label {
         background: transparent;
-    }
-
-    .block-container {
-        padding-top: 2rem;
-        padding-bottom: 3rem;
-    }
-
-    h1, h2, h3, h4 {
-        color: #f8fafc !important;
-        letter-spacing: -0.03em;
-    }
-
-    .stTitle {
-        font-weight: 800;
-        font-size: 2.5rem !important;
-        margin-bottom: 0.25rem !important;
-    }
-
-    .stCaption {
-        color: var(--muted) !important;
-        font-size: 1rem !important;
-    }
-
-    .stRadio > div {
-        background: rgba(15, 23, 42, 0.75);
-        border: 1px solid rgba(148, 163, 184, 0.25);
-        border-radius: 16px;
-        padding: 0.5rem 0.75rem;
-        box-shadow: var(--shadow);
-    }
-
-    .stRadio [role="radio"] {
-        border-color: rgba(56, 189, 248, 0.5) !important;
-    }
-
-    .stRadio [data-baseweb="radio-group"] label {
-        color: var(--text);
+        border: 1px solid transparent;
+        border-radius: 12px;
+        padding: 0.7rem 0.85rem !important;
+        width: 100%;
         font-weight: 600;
+        transition: all .15s ease;
     }
+    section[data-testid="stSidebar"] .stRadio label:hover { background: var(--surface); }
+    section[data-testid="stSidebar"] .stRadio label:has(input:checked) {
+        background: var(--surface-2);
+        border-color: rgba(94,234,212,0.35);
+        color: #fff;
+    }
+    section[data-testid="stSidebar"] .stRadio label > div:first-child { display: none; }
 
+    /* Hero */
+    .hero {
+        background: linear-gradient(135deg, var(--surface) 0%, var(--surface-2) 100%);
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        padding: 1.8rem 2rem;
+        margin-bottom: 1.6rem;
+        position: relative;
+        overflow: hidden;
+    }
+    .hero::after {
+        content: ""; position: absolute; right: -60px; top: -60px;
+        width: 220px; height: 220px; border-radius: 50%;
+        background: radial-gradient(circle, rgba(94,234,212,0.25), transparent 70%);
+    }
+    .hero .tag {
+        display: inline-block; font-family: 'JetBrains Mono', monospace;
+        font-size: .72rem; letter-spacing: .08em; text-transform: uppercase;
+        color: var(--primary); background: rgba(94,234,212,0.1);
+        border: 1px solid rgba(94,234,212,0.25);
+        padding: .25rem .6rem; border-radius: 999px; margin-bottom: .8rem;
+    }
+    .hero h1 { font-size: 2rem !important; margin: 0 0 .3rem 0 !important; padding: 0 !important; }
+    .hero p { color: var(--muted); margin: 0; font-size: 1rem; }
+
+    .steps { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: 1.1rem; }
+    .step {
+        background: rgba(8,12,24,0.5); border: 1px solid var(--border);
+        border-radius: 999px; padding: .35rem .8rem; font-size: .82rem; color: var(--text);
+    }
+    .step b { color: var(--primary); margin-right: .35rem; }
+
+    /* Buttons */
+    .stButton > button, .stDownloadButton > button {
+        border-radius: 12px; font-weight: 700; padding: .65rem 1.1rem;
+        transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
+    }
     .stButton > button {
         border: none;
-        border-radius: 12px;
-        background: linear-gradient(135deg, var(--primary) 0%, var(--primary-strong) 100%);
-        color: #03111d;
-        font-weight: 800;
-        padding: 0.75rem 1.2rem;
-        box-shadow: 0 12px 24px rgba(14, 165, 233, 0.3);
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        background: linear-gradient(135deg, var(--primary), var(--primary-2));
+        color: #04202a;
+        box-shadow: 0 10px 24px -8px rgba(34,211,238,0.45);
     }
-
-    .stButton > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 18px 28px rgba(14, 165, 233, 0.38);
-    }
-
+    .stButton > button:hover { transform: translateY(-1px); color: #04202a; }
     .stDownloadButton > button {
-        border-radius: 12px;
-        border: 1px solid rgba(56, 189, 248, 0.4);
-        background: rgba(14, 165, 233, 0.12);
-        color: var(--text);
-        font-weight: 700;
+        background: var(--surface); color: var(--text);
+        border: 1px solid var(--border);
+        justify-content: flex-start;
+    }
+    .stDownloadButton > button:hover { border-color: rgba(94,234,212,0.5); color: #fff; }
+    .stDownloadButton > button[kind="primary"] {
+        background: linear-gradient(135deg, var(--primary), var(--primary-2));
+        color: #04202a; border: none; justify-content: center; font-size: 1.02rem;
     }
 
-    .stFileUploader > div {
-        background: rgba(15, 23, 42, 0.7);
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        border-radius: 16px;
+    /* Uploader */
+    [data-testid="stFileUploader"] section {
+        background: var(--surface);
+        border: 1.5px dashed rgba(94,234,212,0.35);
+        border-radius: var(--radius);
+        padding: 1.4rem;
     }
+    [data-testid="stFileUploader"] section:hover { border-color: var(--primary); }
 
-    .stDataFrame, .stDataFrame > div {
-        background: rgba(15, 23, 42, 0.7) !important;
-        border-radius: 16px !important;
+    /* Metrics */
+    [data-testid="stMetric"] {
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius); padding: 1rem 1.2rem;
     }
+    [data-testid="stMetricLabel"] { color: var(--muted) !important; }
+    [data-testid="stMetricValue"] { color: #fff !important; font-weight: 800 !important; }
 
-    div[data-testid="stMetricValue"] {
-        color: #f8fafc !important;
-        font-weight: 800 !important;
+    /* Tables, expanders, inputs */
+    [data-testid="stDataFrame"] { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    [data-testid="stExpander"] { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+    .stTextInput input, .stSelectbox div[data-baseweb="select"] > div, .stMultiSelect div[data-baseweb="select"] > div {
+        background: var(--surface) !important; border-radius: 10px !important; border-color: var(--border) !important;
     }
+    .stCheckbox label, .stToggle label { font-weight: 500; }
 
-    section[data-testid="stSidebar"] {
-        background: rgba(2, 6, 23, 0.8);
-        border-right: 1px solid rgba(148, 163, 184, 0.15);
-    }
-
-    .css-1d391kg, .css-18e3th9 {
-        background: rgba(15, 23, 42, 0.7);
-    }
-
-    .stAlert {
-        border-radius: 14px;
-        border: 1px solid rgba(148, 163, 184, 0.2);
-    }
-
-    .stSuccess {
-        border-left: 4px solid var(--green);
-    }
-
-    .stError {
-        border-left: 4px solid var(--red);
-    }
-
-    .stWarning {
-        border-left: 4px solid var(--yellow);
-    }
-
-    .stInfo {
-        border-left: 4px solid var(--primary);
-    }
+    .stAlert { border-radius: 12px; border: 1px solid var(--border); }
+    hr { border-color: var(--border) !important; margin: 1.6rem 0 !important; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.title("🧹 CSV DATA CLEANER")
-st.caption("Ferramentas para limpeza, padronização e auditoria de dados.")
 
-st.divider()
+def hero(tag, titulo, descricao, passos=None):
+    passos_html = ""
+    if passos:
+        passos_html = '<div class="steps">' + "".join(
+            f'<span class="step"><b>{i}</b>{p}</span>'
+            for i, p in enumerate(passos, 1)
+        ) + "</div>"
+    st.markdown(
+        f'<div class="hero"><span class="tag">{tag}</span>'
+        f"<h1>{titulo}</h1><p>{descricao}</p>{passos_html}</div>",
+        unsafe_allow_html=True,
+    )
+
 
 
 # ============================================================
@@ -515,9 +527,11 @@ def renderizar_ajustes_logout(sem_logout_editor):
 
 
 def executar_tmd():
-    st.header("Cálculo automático de TMD")
-    st.caption(
-        "Calcula o TMD das filas oficiais de Cobrança e Retenção."
+    hero(
+        "Atendimento",
+        "Cálculo automático de TMD",
+        "Calcula o TMD das filas oficiais de Cobrança e Retenção.",
+        ["Envie Sessões em Filas", "Envie Pausas", "Processe e revise"],
     )
 
     sessoes = st.file_uploader(
@@ -728,7 +742,6 @@ def executar_tmd():
     st.divider()
 
 
-executar_tmd()
 
 
 # ============================================================
@@ -736,11 +749,11 @@ executar_tmd()
 # ============================================================
 
 def executar_limpeza():
-    st.header("🧹 Limpeza de Base CSV")
-
-    st.caption(
-        "Importe sua base, escolha as regras de limpeza "
-        "e baixe o arquivo tratado."
+    hero(
+        "Limpeza",
+        "Limpeza de Base CSV",
+        "Importe sua base, escolha as regras de limpeza e baixe o arquivo tratado.",
+        ["Envie o CSV", "Escolha as regras", "Baixe o resultado"],
     )
 
     arquivo = st.file_uploader(
@@ -1277,206 +1290,231 @@ def executar_limpeza():
             )
 
 
-executar_limpeza()
 
 
 # ============================================================
 # RESULTADO DA LIMPEZA
 # ============================================================
+def mostrar_resultado_limpeza():
 
-if (
-    "dados_limpos" in st.session_state
-):
+    if (
+        "dados_limpos" in st.session_state
+    ):
 
-    dados_limpos = (
-        st.session_state["dados_limpos"]
-    )
+        dados_limpos = (
+            st.session_state["dados_limpos"]
+        )
 
-    stats = (
-        st.session_state["estatisticas"]
-    )
+        stats = (
+            st.session_state["estatisticas"]
+        )
 
-    relatorios = (
-        st.session_state["relatorios"]
-    )
+        relatorios = (
+            st.session_state["relatorios"]
+        )
 
-    st.subheader("Resultado")
+        st.subheader("Resultado")
 
-    m1, m2, m3 = st.columns(3)
+        m1, m2, m3 = st.columns(3)
 
-    m1.metric(
-        "Registros originais",
-        stats["originais"]
-    )
+        m1.metric(
+            "Registros originais",
+            stats["originais"]
+        )
 
-    m2.metric(
-        "Registros removidos",
-        stats["removidos"]
-    )
+        m2.metric(
+            "Registros removidos",
+            stats["removidos"]
+        )
 
-    m3.metric(
-        "Registros finais",
-        stats["finais"]
-    )
+        m3.metric(
+            "Registros finais",
+            stats["finais"]
+        )
 
-    st.write("### Detalhamento")
+        st.write("### Detalhamento")
 
-    detalhes = pd.DataFrame({
+        detalhes = pd.DataFrame({
 
-        "Regra": [
+            "Regra": [
 
-            "Sem bairro",
+                "Sem bairro",
 
-            "Bairro não encontrado na base oficial",
+                "Bairro não encontrado na base oficial",
 
-            "Nome iniciado por número",
+                "Nome iniciado por número",
 
-            "Nome somente numérico",
+                "Nome somente numérico",
 
-            "Nome muito curto",
+                "Nome muito curto",
 
-            "Nome contendo TESTE/TEST",
+                "Nome contendo TESTE/TEST",
 
-            "Telefone com prefixo bloqueado",
+                "Telefone com prefixo bloqueado",
 
-        ],
+            ],
 
-        "Registros encontrados/removidos": [
+            "Registros encontrados/removidos": [
 
-            stats["sem_bairro"],
+                stats["sem_bairro"],
 
-            stats["bairros_invalidos"],
+                stats["bairros_invalidos"],
 
-            stats["inicio_numero"],
+                stats["inicio_numero"],
 
-            stats["numericos"],
+                stats["numericos"],
 
-            stats["curtos"],
+                stats["curtos"],
 
-            stats["teste"],
+                stats["teste"],
 
-            stats["telefones_bloqueados"],
+                stats["telefones_bloqueados"],
 
-        ],
-    })
+            ],
+        })
 
-    st.dataframe(
-        detalhes,
-        use_container_width=True,
-        hide_index=True
-    )
+        st.dataframe(
+            detalhes,
+            use_container_width=True,
+            hide_index=True
+        )
 
+        st.divider()
+
+        st.write(
+            "### ⬇️ Arquivos separados"
+        )
+
+        arquivos_relatorios = [
+
+            (
+                "sem_bairro",
+                "📍 BAIXAR REGISTROS SEM BAIRRO",
+                "registros_sem_bairro.csv"
+            ),
+
+            (
+                "bairros_invalidos",
+                "🏘️ BAIXAR BAIRROS NÃO ENCONTRADOS",
+                "registros_bairros_invalidos.csv"
+            ),
+
+            (
+                "inicio_numero",
+                "🔢 BAIXAR NOMES INICIADOS POR NÚMERO",
+                "registros_nomes_com_numero.csv"
+            ),
+
+            (
+                "numericos",
+                "🔢 BAIXAR NOMES SOMENTE NUMÉRICOS",
+                "registros_nomes_numericos.csv"
+            ),
+
+            (
+                "curtos",
+                "✏️ BAIXAR NOMES MUITO CURTOS",
+                "registros_nomes_muito_curtos.csv"
+            ),
+
+            (
+                "teste",
+                "🧪 BAIXAR NOMES COM TESTE/TEST",
+                "registros_nomes_teste.csv"
+            ),
+
+            (
+                "telefones_bloqueados",
+                "📞 BAIXAR TELEFONES COM PREFIXO BLOQUEADO",
+                "registros_telefones_prefixos_bloqueados.csv"
+            ),
+        ]
+
+        for (
+            chave,
+            rotulo,
+            nome_arquivo
+        ) in arquivos_relatorios:
+
+            df = relatorios[chave]
+
+            if len(df) > 0:
+
+                csv_relatorio = df.to_csv(
+                    sep=";",
+                    index=False,
+                    encoding="utf-8-sig"
+                )
+
+                st.download_button(
+
+                    label=f"{rotulo} ({len(df)} registros)",
+
+                    data=csv_relatorio,
+
+                    file_name=nome_arquivo,
+
+                    mime="text/csv",
+
+                    use_container_width=True,
+
+                    key=f"download_{chave}"
+                )
+
+        st.write(
+            "### Prévia da base limpa"
+        )
+
+        st.dataframe(
+            dados_limpos.head(50),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        csv_limpo = dados_limpos.to_csv(
+            sep=";",
+            index=False,
+            encoding="utf-8-sig"
+        )
+
+        st.download_button(
+
+            label="⬇️ BAIXAR CSV LIMPO",
+
+            data=csv_limpo,
+
+            file_name="arquivo_limpo.csv",
+
+            mime="text/csv",
+
+            type="primary",
+
+            use_container_width=True,
+
+            key="download_csv_limpo"
+        )
+
+
+# ============================================================
+# NAVEGAÇÃO
+# ============================================================
+
+with st.sidebar:
+    st.markdown("## 🧹 Data Cleaner")
+    st.caption("Limpeza, padronização e auditoria de dados.")
     st.divider()
-
-    st.write(
-        "### ⬇️ Arquivos separados"
+    pagina = st.radio(
+        "Ferramenta",
+        ["🧹  Limpeza de base", "⏱️  Cálculo de TMD"],
+        label_visibility="collapsed",
     )
+    st.divider()
+    st.caption("Dica: arquivos CSV com separador ; ou , são detectados automaticamente.")
 
-    arquivos_relatorios = [
-
-        (
-            "sem_bairro",
-            "📍 BAIXAR REGISTROS SEM BAIRRO",
-            "registros_sem_bairro.csv"
-        ),
-
-        (
-            "bairros_invalidos",
-            "🏘️ BAIXAR BAIRROS NÃO ENCONTRADOS",
-            "registros_bairros_invalidos.csv"
-        ),
-
-        (
-            "inicio_numero",
-            "🔢 BAIXAR NOMES INICIADOS POR NÚMERO",
-            "registros_nomes_com_numero.csv"
-        ),
-
-        (
-            "numericos",
-            "🔢 BAIXAR NOMES SOMENTE NUMÉRICOS",
-            "registros_nomes_numericos.csv"
-        ),
-
-        (
-            "curtos",
-            "✏️ BAIXAR NOMES MUITO CURTOS",
-            "registros_nomes_muito_curtos.csv"
-        ),
-
-        (
-            "teste",
-            "🧪 BAIXAR NOMES COM TESTE/TEST",
-            "registros_nomes_teste.csv"
-        ),
-
-        (
-            "telefones_bloqueados",
-            "📞 BAIXAR TELEFONES COM PREFIXO BLOQUEADO",
-            "registros_telefones_prefixos_bloqueados.csv"
-        ),
-    ]
-
-    for (
-        chave,
-        rotulo,
-        nome_arquivo
-    ) in arquivos_relatorios:
-
-        df = relatorios[chave]
-
-        if len(df) > 0:
-
-            csv_relatorio = df.to_csv(
-                sep=";",
-                index=False,
-                encoding="utf-8-sig"
-            )
-
-            st.download_button(
-
-                label=f"{rotulo} ({len(df)} registros)",
-
-                data=csv_relatorio,
-
-                file_name=nome_arquivo,
-
-                mime="text/csv",
-
-                use_container_width=True,
-
-                key=f"download_{chave}"
-            )
-
-    st.write(
-        "### Prévia da base limpa"
-    )
-
-    st.dataframe(
-        dados_limpos.head(50),
-        use_container_width=True,
-        hide_index=True
-    )
-
-    csv_limpo = dados_limpos.to_csv(
-        sep=";",
-        index=False,
-        encoding="utf-8-sig"
-    )
-
-    st.download_button(
-
-        label="⬇️ BAIXAR CSV LIMPO",
-
-        data=csv_limpo,
-
-        file_name="arquivo_limpo.csv",
-
-        mime="text/csv",
-
-        type="primary",
-
-        use_container_width=True,
-
-        key="download_csv_limpo"
-    )
+if pagina.startswith("🧹"):
+    executar_limpeza()
+    if "dados_limpos" in st.session_state:
+        st.divider()
+        mostrar_resultado_limpeza()
+else:
+    executar_tmd()
