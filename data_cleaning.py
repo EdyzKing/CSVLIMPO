@@ -294,14 +294,19 @@ def identificar_telefones_com_prefixos_bloqueados(dados):
         raise ValueError("Coluna 'Telefone' não encontrada.")
 
     prefixos_bloqueados = (
-        "55539999",
-        "555599999",
-        "55519999",
         "555399999",
+        "555599999",
+        "555199999",
+        "555499999",
         "555444",
         "555555",
         "99999",
-    )
+        "3020",
+        "3320",
+        "5555555",
+        "9999",
+        "999",
+        )
 
     telefone = (
         dados["Telefone"]
