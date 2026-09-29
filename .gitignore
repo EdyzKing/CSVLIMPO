@@ -21,3 +21,16 @@ Thumbs.db
 # IDEs
 .vscode/
 .idea/
+
+# Segredos e configuração local
+.env
+.streamlit/secrets.toml
+
+# Dados e saídas (nunca versionar dados de colaboradores)
+*.xlsx
+*.xls
+*.zip
+*.rar
+logs/
+entrada/
+saida/
