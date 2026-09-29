@@ -6,25 +6,69 @@ import unicodedata
 import pandas as pd
 
 
-SESSION_COLUMNS = {
-    "Agente",
-    "Fila",
-    "Login",
-    "Direção",
-    "Logout",
-    "Tempo Logado",
+MAX_CSV_BYTES = 20 * 1024 * 1024
+
+
+class ErroTMD(ValueError):
+    """Erro com mensagem segura para exibir ao usuário (sem dados do CSV)."""
+
+
+NOMES_TIPO = {"sessoes": "Sessões em Filas", "pausas": "Pausas"}
+
+# Nome oficial da coluna -> outros nomes aceitos. A comparação ignora
+# maiúsculas, acentos, espaços e pontuação ("Data/Hora" = "data hora").
+SESSOES_ALIASES = {
+    "Agente": {"colaborador", "atendente", "nome do agente", "nome agente"},
+    "Fila": {"nome da fila", "filas"},
+    "Login": {"data login", "data hora login", "inicio da sessao"},
+    "Direção": set(),
+    "Logout": {"data logout", "data hora logout", "fim da sessao"},
+    "Tempo Logado": {"tempo de login", "duracao logado"},
 }
 
-BREAK_COLUMNS = {
-    "Data/Hora",
-    "Agente",
-    "Fila",
-    "Direção",
-    "Pausa",
-    "Tempo em Pausa",
-    "Tempo Estimado",
-    "Justificativa",
+PAUSAS_ALIASES = {
+    "Data/Hora": {"data e hora", "datahora", "data hora da pausa", "data de inicio"},
+    "Agente": SESSOES_ALIASES["Agente"],
+    "Direção": {"sentido"},
+    "Pausa": {
+        "motivo", "motivo da pausa", "tipo de pausa",
+        "causa desconexao", "causa da desconexao",
+    },
+    "Tempo em Pausa": {
+        "tempo de pausa", "duracao da pausa", "tempo pausa", "espera",
+    },
+}
+
+# Colunas que podem não existir em um dos arquivos: ficam vazias.
+PAUSAS_OPCIONAIS = {
+    "Fila": {"nome da fila", "filas"},
+    "Tempo Estimado": {"atendimento"},
+    "Justificativa": set(),
+    "Justificativa de Atraso": {"justificativa atraso"},
+}
+
+# Colunas do arquivo unificado de pausas, nesta ordem.
+COLUNAS_PAUSAS = [
+    "Data/Hora", "Agente", "Fila", "Direção", "Pausa",
+    "Tempo em Pausa", "Tempo Estimado", "Justificativa",
     "Justificativa de Atraso",
+]
+
+# Arquivo "Chamadas - Detalhado Atendidas": coluna original -> coluna de Pausas.
+EQUIVALENCIAS_CHAMADAS = {
+    "Data de início": "Data/Hora",
+    "Sentido": "Direção",
+    "Causa desconexão": "Pausa",
+    "Espera": "Tempo em Pausa",
+    "Atendimento": "Tempo Estimado",
+}
+_CABECALHOS_CHAMADAS = {"data de inicio"}
+_OPCIONAIS_POR_TIPO = {"sessoes": None, "pausas": PAUSAS_OPCIONAIS}
+
+_ALIASES_POR_TIPO = {"sessoes": SESSOES_ALIASES, "pausas": PAUSAS_ALIASES}
+COLUNAS_NECESSARIAS = {
+    NOMES_TIPO[tipo]: list(aliases)
+    for tipo, aliases in _ALIASES_POR_TIPO.items()
 }
 
 RETENCAO_FILAS = {
@@ -32,7 +76,7 @@ RETENCAO_FILAS = {
     "REGIAO 1 - CANCELAMENTO",
 }
 
-NEGOCIACAO_FILAS = {
+COBRANCA_FILAS = {
     "COBRANCA INTERNO",
     "DISCADOR COBRANCA CS",
     "REGIAO 1 - COBRANCA",
@@ -50,48 +94,236 @@ def _texto_normalizado(valor):
     return re.sub(r"\s+", " ", texto).upper()
 
 
-def _ler_csv(conteudo):
+def _norm_col(nome):
+    texto = unicodedata.normalize(
+        "NFKD", str(nome).replace("\ufeff", "").strip().lower()
+    )
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", " ", texto).strip()
+
+
+def _posicoes(colunas, aliases, usadas=None):
+    """Posição de cada coluna necessária, encontrada pelo nome."""
+    posicoes, usadas = {}, set(usadas or ())
+    for canonico, outros in aliases.items():
+        alvo = {_norm_col(canonico)} | {_norm_col(o) for o in outros}
+        for i, coluna in enumerate(colunas):
+            if i not in usadas and _norm_col(coluna) in alvo:
+                posicoes[canonico] = i
+                usadas.add(i)
+                break
+    return posicoes
+
+
+def _padronizar(dados, aliases, nome, opcionais=None):
+    """Renomeia as colunas necessárias e mantém as extras sem interferir."""
+    colunas = list(dados.columns)
+    posicoes = _posicoes(colunas, aliases)
+    ausentes = [c for c in aliases if c not in posicoes]
+    if ausentes:
+        encontradas = ", ".join(str(c) for c in colunas[:15])
+        raise ErroTMD(
+            f"O arquivo de {nome} não possui as colunas: "
+            f"{', '.join(ausentes)}. Colunas encontradas: {encontradas}."
+        )
+    opcionais = opcionais or {}
+    posicoes_opcionais = _posicoes(
+        colunas, opcionais, usadas=set(posicoes.values())
+    )
+    novas = {c: dados.iloc[:, i] for c, i in posicoes.items()}
+    for canonico in opcionais:
+        if canonico in posicoes_opcionais:
+            novas[canonico] = dados.iloc[:, posicoes_opcionais[canonico]]
+        else:
+            novas[canonico] = pd.Series("", index=dados.index, dtype=object)
+
+    usadas = set(posicoes.values()) | set(posicoes_opcionais.values())
+    for i, coluna in enumerate(colunas):
+        if i in usadas:
+            continue
+        rotulo = str(coluna)
+        while rotulo in novas:
+            rotulo += " (extra)"
+        novas[rotulo] = dados.iloc[:, i]
+
+    if "Data/Hora" in posicoes and "_origem" not in colunas:
+        cabecalho = _norm_col(colunas[posicoes["Data/Hora"]])
+        origem = "chamadas" if cabecalho in _CABECALHOS_CHAMADAS else "pausas"
+        novas["_origem"] = pd.Series(origem, index=dados.index, dtype=object)
+    return pd.DataFrame(novas, index=dados.index)
+
+
+def padronizar_sessoes(dados):
+    return _padronizar(dados, SESSOES_ALIASES, "sessões em filas")
+
+
+def padronizar_pausas(dados):
+    return _padronizar(dados, PAUSAS_ALIASES, "pausas", PAUSAS_OPCIONAIS)
+
+
+def _linhas_csv(conteudo):
     if hasattr(conteudo, "getvalue"):
         conteudo = conteudo.getvalue()
     if isinstance(conteudo, str):
-        conteudo = conteudo.encode("utf-8-sig")
+        conteudo = conteudo.encode("utf-8")
     if not conteudo or not conteudo.strip():
-        raise ValueError("O arquivo CSV está vazio.")
-
-    amostra = conteudo[:8192].decode("utf-8-sig", errors="replace")
-    try:
-        separador = csv.Sniffer().sniff(amostra, delimiters=";,\t,").delimiter
-    except csv.Error:
-        separador = ";" if amostra.count(";") >= amostra.count(",") else ","
-
-    ultimo_erro = None
-    for encoding in ("utf-8-sig", "utf-8", "latin1"):
-        try:
-            dados = pd.read_csv(
-                io.BytesIO(conteudo),
-                sep=separador,
-                encoding=encoding,
-                dtype=str,
-                keep_default_na=False,
-            )
-            dados.columns = [
-                str(coluna).replace("\ufeff", "").strip()
-                for coluna in dados.columns
-            ]
-            return dados
-        except UnicodeDecodeError as erro:
-            ultimo_erro = erro
-
-    raise ValueError("Não foi possível decodificar o CSV.") from ultimo_erro
-
-
-def _validar_colunas(dados, esperadas, nome):
-    ausentes = sorted(esperadas.difference(dados.columns))
-    if ausentes:
-        raise ValueError(
-            f"O arquivo de {nome} não possui as colunas: "
-            f"{', '.join(ausentes)}."
+        raise ErroTMD("O arquivo CSV está vazio.")
+    if len(conteudo) > MAX_CSV_BYTES:
+        raise ErroTMD(
+            f"O arquivo excede o limite de {MAX_CSV_BYTES // (1024 * 1024)} MB."
         )
+
+    texto = None
+    for encoding in ("utf-8-sig", "cp1252", "latin1"):
+        try:
+            texto = conteudo.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if texto is None:
+        raise ErroTMD("Não foi possível decodificar o CSV.")
+
+    amostra = "\n".join(texto.splitlines()[:30])
+    separador = max(";,\t|", key=amostra.count)
+    try:
+        linhas = [
+            linha
+            for linha in csv.reader(io.StringIO(texto), delimiter=separador)
+            if any(celula.strip() for celula in linha)
+        ]
+    except csv.Error:
+        raise ErroTMD("O arquivo não está em um formato CSV válido.") from None
+    if not linhas:
+        raise ErroTMD("O arquivo CSV está vazio.")
+    return linhas
+
+
+def _montar_dataframe(linhas, indice_cabecalho):
+    cabecalho, vistos = [], {}
+    for nome in linhas[indice_cabecalho]:
+        nome = str(nome).replace("\ufeff", "").strip() or "Coluna"
+        vistos[nome] = vistos.get(nome, 0) + 1
+        cabecalho.append(nome if vistos[nome] == 1 else f"{nome} ({vistos[nome]})")
+    corpo = linhas[indice_cabecalho + 1:]
+    largura = max([len(cabecalho)] + [len(linha) for linha in corpo])
+    cabecalho += [f"Coluna {n}" for n in range(len(cabecalho) + 1, largura + 1)]
+    corpo = [linha + [""] * (largura - len(linha)) for linha in corpo]
+    return pd.DataFrame(corpo, columns=cabecalho, dtype=str)
+
+
+def _localizar_cabecalho(linhas, aliases):
+    """Acha a linha do cabeçalho (aceita títulos antes da tabela)."""
+    for i, linha in enumerate(linhas[:25]):
+        if len(_posicoes(linha, aliases)) == len(aliases):
+            return i
+    return None
+
+
+def carregar_csv(conteudo, tipo=None):
+    """Lê um CSV de qualquer nome/ordem de colunas e devolve (tipo, dados)."""
+    linhas = _linhas_csv(conteudo)
+    tipos = [tipo] if tipo else list(_ALIASES_POR_TIPO)
+    achados = {
+        t: _localizar_cabecalho(linhas, _ALIASES_POR_TIPO[t]) for t in tipos
+    }
+    achados = {t: i for t, i in achados.items() if i is not None}
+
+    if len(achados) == 1:
+        t, i = next(iter(achados.items()))
+        dados = _montar_dataframe(linhas, i)
+        return t, _padronizar(
+            dados, _ALIASES_POR_TIPO[t], NOMES_TIPO[t].lower(),
+            _OPCIONAIS_POR_TIPO[t],
+        )
+    if len(achados) > 1:
+        raise ErroTMD(
+            "O arquivo tem colunas de Sessões em Filas e de Pausas ao mesmo "
+            "tempo. Envie cada tipo em um arquivo separado."
+        )
+    if tipo:  # levanta o erro com a lista de colunas que faltam
+        _padronizar(
+            _montar_dataframe(linhas, 0),
+            _ALIASES_POR_TIPO[tipo],
+            NOMES_TIPO[tipo].lower(),
+        )
+    necessarias = "; ".join(
+        f"{NOMES_TIPO[t]}: {', '.join(a)}" for t, a in _ALIASES_POR_TIPO.items()
+    )
+    raise ErroTMD(
+        "Não reconheci este arquivo. Ele precisa ter as colunas de um destes "
+        f"tipos — {necessarias}."
+    )
+
+
+def classificar_csv(conteudo):
+    """Identifica o tipo do arquivo pelas colunas. Devolve (tipo, nº de linhas)."""
+    tipo, dados = carregar_csv(conteudo)
+    return tipo, len(dados)
+
+
+def _remover_duplicidade(dados, campos, ignorar_vazios=False):
+    """Mantém a 1ª linha de cada combinação de campos.
+
+    Com ignorar_vazios, linhas em que algum dos campos está em branco nunca
+    são tratadas como duplicadas (vazio não é um valor que se repete).
+    """
+    chaves = dados[campos].astype(str)
+    for campo in campos:
+        chaves[campo] = chaves[campo].str.strip()
+    repetido = chaves.duplicated(keep="first")
+    if ignorar_vazios:
+        repetido &= chaves.ne("").all(axis=1)
+    return dados.loc[~repetido].reset_index(drop=True)
+
+
+def limpar_sessoes(dados):
+    """Remove duplicidade nesta ordem: (Agente, Login, Direção) e depois
+    (Agente, Direção, Logout).
+
+    A equipe (Retenção/Cobrança, definida pela fila) entra na comparação.
+    O mesmo colaborador aparece em várias filas no mesmo login; guardar só
+    a primeira linha descartaria a fila da equipe e ele sumiria do TMD.
+    """
+    dados = dados.copy()
+    dados["_equipe"] = dados["Fila"].map(_equipe).fillna("OUTRAS")
+    dados = _remover_duplicidade(
+        dados, ["Agente", "Login", "Direção", "_equipe"], ignorar_vazios=True
+    )
+    dados = _remover_duplicidade(
+        dados, ["Agente", "Direção", "Logout", "_equipe"], ignorar_vazios=True
+    )
+    return dados.drop(columns="_equipe")
+
+
+def unificar_pausas(quadros):
+    """Soma os arquivos de pausas mantendo só as colunas principais."""
+    colunas = COLUNAS_PAUSAS + ["_origem"]
+    return pd.concat([q[colunas] for q in quadros], ignore_index=True).fillna("")
+
+
+def limpar_pausas(dados):
+    """Remove duplicidade de (Data/Hora, Agente, Pausa, Tempo em Pausa)."""
+    return _remover_duplicidade(
+        dados, ["Data/Hora", "Agente", "Pausa", "Tempo em Pausa"]
+    )
+
+
+def _ler_tipo(conteudo, tipo):
+    """Lê e soma os arquivos de um tipo (ainda sem remover duplicidades)."""
+    itens = conteudo if isinstance(conteudo, (list, tuple)) else [conteudo]
+    if not itens:
+        raise ErroTMD(f"Nenhum arquivo de {NOMES_TIPO[tipo].lower()} foi enviado.")
+    quadros = [carregar_csv(item, tipo)[1] for item in itens]
+    if tipo == "pausas":
+        return unificar_pausas(quadros)
+    if len(quadros) == 1:
+        return quadros[0]
+    return pd.concat(quadros, ignore_index=True).fillna("")
+
+
+def _ler_limpo(conteudo, tipo):
+    dados = _ler_tipo(conteudo, tipo)
+    return limpar_sessoes(dados) if tipo == "sessoes" else limpar_pausas(dados)
 
 
 def _dataserie(valores):
@@ -136,30 +368,29 @@ def _equipe(fila):
     fila_normalizada = _texto_normalizado(fila)
     compacta = re.sub(r"[^A-Z0-9]", "", fila_normalizada)
     fila_oficial = re.sub(r"\s+", " ", fila_normalizada)
-    if (
-        fila_oficial in RETENCAO_FILAS
-        or "RETENCAO" in compacta
-        or "CANCELAMENTO" in compacta
-    ):
+    # Filas oficiais primeiro; só depois o reconhecimento pelo nome.
+    if fila_oficial in RETENCAO_FILAS:
         return "RETENÇÃO"
-    if (
-        fila_oficial in NEGOCIACAO_FILAS
-        or "NEGOCIACAO" in compacta
-        or "COBRANCA" in compacta
-    ):
-        return "NEGOCIAÇÃO"
+    if fila_oficial in COBRANCA_FILAS:
+        return "COBRANÇA"
+    if "RETENCAO" in compacta or "CANCELAMENTO" in compacta:
+        return "RETENÇÃO"
+    if "COBRANCA" in compacta or "NEGOCIACAO" in compacta:
+        return "COBRANÇA"
     return None
 
 
-def _intervalos_sessoes(dados):
+def _intervalos_sessoes(dados, pendentes=None):
     sessoes = dados.copy()
     sessoes["_agente"] = sessoes["Agente"].astype(str).str.strip()
     sessoes["_fila"] = sessoes["Fila"].astype(str).str.strip()
     sessoes["_equipe"] = sessoes["Fila"].map(_equipe)
     sessoes["_login"] = _dataserie(sessoes["Login"])
     sessoes["_logout"] = _dataserie(sessoes["Logout"])
-    sessoes["_duracao"] = sessoes["Tempo Logado"].map(
-        _duracao_em_segundos
+    sessoes["_login_txt"] = sessoes["Login"].astype(str).str.strip()
+    sessoes["_logout_txt"] = sessoes["Logout"].astype(str).str.strip()
+    sessoes["_duracao"] = (
+        sessoes["Tempo Logado"].map(_duracao_em_segundos).astype(float)
     )
     sessoes["_direcao"] = sessoes["Direção"].map(_texto_normalizado)
     sessoes = sessoes[
@@ -176,11 +407,14 @@ def _intervalos_sessoes(dados):
         "_logout",
         "_direcao",
     ]
-    colunas_evento.append("_duracao")
+    colunas_evento += ["_duracao", "_login_txt", "_logout_txt"]
     for registro in sessoes[colunas_evento].itertuples(
         index=False, name=None
     ):
-        agente, fila, equipe, login, logout, direcao, duracao = registro
+        (
+            agente, fila, equipe, login, logout, direcao, duracao,
+            login_txt, logout_txt,
+        ) = registro
         chave = (agente, fila)
         eh_entrada = (
             "ENTRADA" in direcao
@@ -206,12 +440,23 @@ def _intervalos_sessoes(dados):
                 login + pd.Timedelta(seconds=duracao),
             ))
         elif pd.notna(login) and (eh_entrada or not eh_saida):
-            abertos[chave] = (equipe, login)
+            abertos[chave] = (equipe, login, login_txt)
         elif pd.notna(logout) or eh_saida:
             fim = logout if pd.notna(logout) else login
-            equipe_aberta, inicio = abertos.pop(chave, (None, None))
+            equipe_aberta, inicio, _ = abertos.pop(chave, (None, None, None))
             if inicio is not None and pd.notna(fim) and fim > inicio:
                 intervalos.append((agente, equipe_aberta, inicio, fim))
+            elif (
+                inicio is None
+                and pendentes is not None
+                and pd.notna(logout)
+                and pd.isna(login)
+            ):
+                pendentes.append(("Login", agente, fila, logout_txt))
+
+    if pendentes is not None:
+        for (agente, fila), (_, _, login_txt) in abertos.items():
+            pendentes.append(("Logout", agente, fila, login_txt))
 
     intervalos = pd.DataFrame(
         intervalos,
@@ -236,13 +481,19 @@ def _unir_intervalos(intervalos):
     return [(inicio, fim) for inicio, fim in unidos]
 
 
-def _pausas_unicas(dados):
+def _pausas_unicas(dados, pendentes=None):
     pausas = dados.copy()
     pausas["_agente"] = pausas["Agente"].astype(str).str.strip()
     pausas["_inicio"] = _dataserie(pausas["Data/Hora"])
+    pausas["_inicio_txt"] = pausas["Data/Hora"].astype(str).str.strip()
     pausas["_motivo"] = pausas["Pausa"].astype(str).str.strip()
-    pausas["_duracao"] = pausas["Tempo em Pausa"].map(_duracao_em_segundos)
+    pausas["_duracao"] = (
+        pausas["Tempo em Pausa"].map(_duracao_em_segundos).astype(float)
+    )
     pausas["_direcao"] = pausas["Direção"].map(_texto_normalizado)
+    pausas["_chamada"] = (
+        pausas["_origem"].eq("chamadas") if "_origem" in pausas.columns else False
+    )
     pausas = pausas[
         pausas["_agente"].ne("")
         & pausas["_inicio"].notna()
@@ -261,17 +512,24 @@ def _pausas_unicas(dados):
             "_motivo",
             "_duracao",
             "_direcao",
+            "_inicio_txt",
+            "_chamada",
         ]
         for registro in grupo.sort_values("_inicio")[colunas_evento].itertuples(
             index=False, name=None
         ):
-            agente, inicio, motivo_registro, duracao_registro, direcao = registro
-            eh_entrada = (
+            (
+                agente, inicio, motivo_registro, duracao_registro, direcao,
+                inicio_txt, chamada,
+            ) = registro
+            # Linhas do arquivo de chamadas são eventos isolados: "Sentido"
+            # (Entrada/Saída da chamada) não abre nem fecha pausa.
+            eh_entrada = not chamada and (
                 "ENTRADA" in direcao
                 or "INICIO" in direcao
                 or "START" in direcao
             )
-            eh_saida = (
+            eh_saida = not chamada and (
                 "SAIDA" in direcao
                 or "FIM" in direcao
                 or "EXIT" in direcao
@@ -285,7 +543,7 @@ def _pausas_unicas(dados):
                     ).total_seconds()
                 resultado.append((entrada[0], entrada[1], motivo, duracao))
             elif eh_entrada:
-                aberturas.append((agente, inicio, duracao_registro))
+                aberturas.append((agente, inicio, duracao_registro, inicio_txt))
             elif duracao_registro > 0:
                 resultado.append((
                     agente,
@@ -298,6 +556,12 @@ def _pausas_unicas(dados):
             for entrada in aberturas
             if entrada[2] > 0
         )
+        if pendentes is not None:
+            pendentes.extend(
+                ("Retorno da pausa", entrada[0], motivo, entrada[3])
+                for entrada in aberturas
+                if entrada[2] <= 0
+            )
 
     return pd.DataFrame(
         resultado,
@@ -319,8 +583,8 @@ def _calcular_sobreposicao(inicio, fim, pausas):
 
 def calcular_tmd(sessoes, pausas):
     """Calcula o TMD diário por equipe, sem duplicar filas ou pausas."""
-    _validar_colunas(sessoes, SESSION_COLUMNS, "sessões em filas")
-    _validar_colunas(pausas, BREAK_COLUMNS, "pausas")
+    sessoes = padronizar_sessoes(sessoes)
+    pausas = padronizar_pausas(pausas)
 
     intervalos = _intervalos_sessoes(sessoes)
     pausas_unicas = _pausas_unicas(pausas)
@@ -329,9 +593,9 @@ def calcular_tmd(sessoes, pausas):
             str(valor).strip()
             for valor in sessoes["Fila"].dropna().unique()
         )
-        raise ValueError(
+        raise ErroTMD(
             "Nenhuma sessão válida foi encontrada. Verifique as datas, "
-            f"Login/Logout, Tempo Logado e as filas RETENÇÃO/NEGOCIAÇÃO. "
+            f"Login/Logout, Tempo Logado e as filas RETENÇÃO/COBRANÇA. "
             f"Filas lidas: {', '.join(filas) or '[nenhuma]'}."
         )
     resultados = []
@@ -408,17 +672,9 @@ def _formatar_duracao(segundos):
     return f"{horas:02d}:{minutos:02d}:{segundos:02d}"
 
 
-def calcular_tmd_dos_csvs(sessoes_conteudo, pausas_conteudo):
-    return calcular_tmd(
-        _ler_csv(sessoes_conteudo),
-        _ler_csv(pausas_conteudo),
-    )
-
-
 def identificar_colaboradores_sem_logout(sessoes):
     """Lista Saídas sem Logout, sem transformar esses registros em sessões."""
-    _validar_colunas(sessoes, SESSION_COLUMNS, "sessões em filas")
-    dados = sessoes.copy()
+    dados = padronizar_sessoes(sessoes)
     dados["_equipe"] = dados["Fila"].map(_equipe)
     dados["_direcao"] = dados["Direção"].map(_texto_normalizado)
     sem_logout = dados[
@@ -442,41 +698,156 @@ def identificar_colaboradores_sem_logout(sessoes):
     ).drop_duplicates()
 
 
-def _aplicar_logouts_manuais(sessoes, logouts_manuais):
-    if logouts_manuais is None or logouts_manuais.empty:
-        return sessoes
+COLUNAS_PENDENCIAS = [
+    "Tipo",
+    "Agente",
+    "Fila / Motivo",
+    "Horário registrado",
+    "Horário faltando",
+]
+_COLUNAS_AJUSTE = [
+    "Horário faltando",
+    "Agente",
+    "Fila / Motivo",
+    "Horário registrado",
+    "Horário informado",
+]
+_FORMATO_HORARIO = re.compile(r"^\d{2}/\d{2}/\d{4} \d{2}:\d{2}(:\d{2})?$")
 
-    dados = sessoes.copy()
-    ajustes = logouts_manuais.copy()
-    ajustes["_agente"] = ajustes["Agente"].astype(str).str.strip()
-    ajustes["_fila"] = ajustes["Fila"].astype(str).str.strip()
-    ajustes["_login"] = _dataserie(ajustes["Login"])
-    ajustes["_logout_manual"] = _dataserie(ajustes["Logout manual"])
 
-    colunas_ajuste = [
-        "Agente",
-        "Fila",
-        "Login",
-        "_agente",
-        "_fila",
-        "_login",
-        "_logout_manual",
-        "Logout manual",
-    ]
-    for ajuste in ajustes[colunas_ajuste].itertuples(
+def _horario(texto):
+    """Converte um texto em Timestamp (NaT se vazio ou inválido)."""
+    return _dataserie(pd.Series([str(texto or "").strip()])).iloc[0]
+
+
+def formatar_horario(texto):
+    """Horário no padrão DD/MM/AAAA HH:MM:SS (ou None se inválido)."""
+    horario = _horario(texto)
+    return None if pd.isna(horario) else horario.strftime("%d/%m/%Y %H:%M:%S")
+
+
+def validar_horario(faltando, registrado, informado):
+    """Confere o horário digitado. Devolve (status, mensagem).
+
+    status: "vazio" (nada digitado), "ok" ou "erro".
+    """
+    texto = str(informado or "").strip()
+    if not texto:
+        return "vazio", ""
+    if not _FORMATO_HORARIO.match(texto) or pd.isna(_horario(texto)):
+        return "erro", "Horário incompleto ou inexistente. Use DD/MM/AAAA HH:MM:SS."
+    horario, referencia = _horario(texto), _horario(registrado)
+    if pd.notna(referencia):
+        marca = referencia.strftime("%d/%m/%Y %H:%M:%S")
+        if faltando in ("Logout", "Retorno da pausa") and horario <= referencia:
+            return "erro", f"Precisa ser depois de {marca}."
+        if faltando == "Login" and horario >= referencia:
+            return "erro", f"Precisa ser antes de {marca}."
+    return "ok", ""
+
+
+def _normalizar_ajustes(ajustes):
+    if ajustes is None or ajustes.empty:
+        return None
+    if "Horário informado" in ajustes.columns:
+        return ajustes[_COLUNAS_AJUSTE]
+    if "Logout manual" in ajustes.columns:  # formato antigo
+        return pd.DataFrame(
+            {
+                "Horário faltando": "Logout",
+                "Agente": ajustes["Agente"],
+                "Fila / Motivo": ajustes["Fila"],
+                "Horário registrado": ajustes["Login"],
+                "Horário informado": ajustes["Logout manual"],
+            }
+        )
+    return None
+
+
+def aplicar_horarios_manuais(sessoes, pausas, preenchimentos):
+    """Grava cada horário informado na coluna correspondente.
+
+    Logout -> coluna Logout; Login -> coluna Login; retorno da pausa ->
+    coluna Tempo em Pausa (duração entre o início e o retorno).
+    """
+    sessoes = padronizar_sessoes(sessoes).copy()
+    pausas = padronizar_pausas(pausas).copy()
+    ajustes = _normalizar_ajustes(preenchimentos)
+    if ajustes is None:
+        return sessoes, pausas
+
+    txt = lambda serie: serie.astype(str).str.strip()
+    for faltando, agente, motivo, registrado, informado in ajustes.itertuples(
         index=False, name=None
     ):
-        agente, fila, login, _, _, _, logout_manual, logout_texto = ajuste
-        if pd.isna(logout_manual):
+        status, _ = validar_horario(faltando, registrado, informado)
+        if status != "ok":
             continue
-        mascara = (
-            dados["Agente"].astype(str).str.strip().eq(agente.strip())
-            & dados["Fila"].astype(str).str.strip().eq(fila.strip())
-            & dados["Login"].astype(str).str.strip().eq(login.strip())
-            & dados["Logout"].astype(str).str.strip().eq("")
-        )
-        dados.loc[mascara, "Logout"] = logout_texto
-    return dados
+        agente, motivo = str(agente).strip(), str(motivo).strip()
+        registrado, informado = str(registrado).strip(), str(informado).strip()
+
+        if faltando in ("Logout", "Login"):
+            campo_ref, campo_falta = (
+                ("Login", "Logout") if faltando == "Logout" else ("Logout", "Login")
+            )
+            mascara = (
+                txt(sessoes["Agente"]).eq(agente)
+                & txt(sessoes["Fila"]).eq(motivo)
+                & txt(sessoes[campo_ref]).eq(registrado)
+                & txt(sessoes[campo_falta]).eq("")
+            )
+            sessoes.loc[mascara, campo_falta] = informado
+        elif faltando == "Retorno da pausa":
+            mascara = (
+                txt(pausas["Agente"]).eq(agente)
+                & txt(pausas["Pausa"]).eq(motivo)
+                & txt(pausas["Data/Hora"]).eq(registrado)
+                & pausas["Tempo em Pausa"].map(_duracao_em_segundos).eq(0)
+            )
+            segundos = (_horario(informado) - _horario(registrado)).total_seconds()
+            pausas.loc[mascara, "Tempo em Pausa"] = _formatar_duracao(segundos)
+    return sessoes, pausas
+
+
+def identificar_horarios_faltantes(sessoes, pausas):
+    """Lista horários que faltam nos arquivos e distorcem o TMD.
+
+    - Logout faltando: entrada sem saída, ou Saída sem Logout.
+    - Login faltando: saída registrada sem entrada.
+    - Retorno da pausa faltando: pausa iniciada e nunca encerrada
+      (só para colaboradores de Retenção/Cobrança).
+    """
+    sessoes = padronizar_sessoes(sessoes)
+    pausas = padronizar_pausas(pausas)
+
+    pendentes = []
+    _intervalos_sessoes(sessoes, pendentes)
+    _pausas_unicas(pausas, pendentes)
+    for agente, fila, login, _, _ in identificar_colaboradores_sem_logout(
+        sessoes
+    ).itertuples(index=False, name=None):
+        pendentes.append(("Logout", agente, fila, login))
+
+    agentes_das_equipes = set(
+        sessoes.loc[sessoes["Fila"].map(_equipe).notna(), "Agente"]
+        .astype(str)
+        .str.strip()
+    )
+    linhas = []
+    for faltando, agente, motivo, registrado in pendentes:
+        if not registrado or pd.isna(_horario(registrado)):
+            continue
+        if faltando == "Retorno da pausa" and agente not in agentes_das_equipes:
+            continue
+        tipo = "Sessão" if faltando in ("Logout", "Login") else "Pausa"
+        linhas.append((tipo, agente, motivo, registrado, faltando))
+
+    resultado = pd.DataFrame(linhas, columns=COLUNAS_PENDENCIAS)
+    return (
+        resultado.drop_duplicates()
+        .sort_values(["Agente", "Tipo"], kind="stable")
+        .reset_index(drop=True)
+    )
 
 
 def _tmd_sem_correcao(sessoes, pausas):
@@ -497,8 +868,8 @@ def _tmd_sem_correcao(sessoes, pausas):
     pausas_brutas = pausas.copy()
     pausas_brutas["_agente"] = pausas_brutas["Agente"].astype(str).str.strip()
     pausas_brutas["_inicio"] = _dataserie(pausas_brutas["Data/Hora"])
-    pausas_brutas["_duracao"] = pausas_brutas["Tempo em Pausa"].map(
-        _duracao_em_segundos
+    pausas_brutas["_duracao"] = (
+        pausas_brutas["Tempo em Pausa"].map(_duracao_em_segundos).astype(float)
     )
     pausas_brutas = pausas_brutas[
         pausas_brutas["_agente"].ne("")
@@ -542,16 +913,30 @@ def _tmd_sem_correcao(sessoes, pausas):
 def calcular_tmd_comparativo_dos_csvs(
     sessoes_conteudo,
     pausas_conteudo,
-    logouts_manuais=None,
+    ajustes=None,
 ):
-    sessoes = _ler_csv(sessoes_conteudo)
-    pausas = _ler_csv(pausas_conteudo)
-    sessoes_corrigidas = _aplicar_logouts_manuais(
-        sessoes,
-        logouts_manuais,
+    """Devolve (comparativo, horários faltantes) a partir dos CSVs.
+
+    Aceita um arquivo (bytes) ou uma lista de arquivos de cada tipo.
+    """
+    sessoes_brutas = _ler_tipo(sessoes_conteudo, "sessoes")
+    pausas_brutas = _ler_tipo(pausas_conteudo, "pausas")
+    sessoes = limpar_sessoes(sessoes_brutas)
+    pausas = limpar_pausas(pausas_brutas)
+    pendencias = identificar_horarios_faltantes(sessoes, pausas)
+
+    sessoes_corrigidas, pausas_corrigidas = aplicar_horarios_manuais(
+        sessoes, pausas, ajustes
     )
-    corrigido = calcular_tmd(sessoes_corrigidas, pausas)
-    sem_correcao = _tmd_sem_correcao(sessoes, pausas)
+    try:
+        corrigido = calcular_tmd(sessoes_corrigidas, pausas_corrigidas)
+    except ErroTMD:
+        if pendencias.empty:
+            raise
+        # Sem sessões válidas por causa de horários faltando: o usuário
+        # precisa poder preenchê-los antes de haver resultado.
+        corrigido = pd.DataFrame(columns=["Data", "Equipe", "TMD"])
+    sem_correcao = _tmd_sem_correcao(sessoes_brutas, pausas_brutas)
     comparativo = sem_correcao.rename(columns={"TMD": "TMD sem correção"})
     comparativo = comparativo.merge(
         corrigido.rename(columns={"TMD": "TMD corrigido"}),
@@ -566,31 +951,69 @@ def calcular_tmd_comparativo_dos_csvs(
     )
     return (
         comparativo[["Data", "Equipe", "TMD sem correção", "TMD corrigido"]],
-        identificar_colaboradores_sem_logout(sessoes),
+        pendencias,
     )
 
 
-def corrigir_sessoes_com_logouts_manuais(sessoes_conteudo, logouts_manuais):
-    sessoes = _ler_csv(sessoes_conteudo)
-    return _aplicar_logouts_manuais(sessoes, logouts_manuais)
+def corrigir_csvs_com_horarios(sessoes_conteudo, pausas_conteudo, ajustes):
+    """Devolve (sessões, pausas) com os horários informados já gravados."""
+    return aplicar_horarios_manuais(
+        _ler_limpo(sessoes_conteudo, "sessoes"),
+        _ler_limpo(pausas_conteudo, "pausas"),
+        ajustes,
+    )
 
 
 def diagnosticar_tmd(sessoes_conteudo, pausas_conteudo):
-    """Retorna uma amostra dos dados lidos para diagnosticar CSVs reais."""
-    sessoes = _ler_csv(sessoes_conteudo)
-    pausas = _ler_csv(pausas_conteudo)
+    """Resumo do que foi lido, para o usuário conferir os arquivos."""
+    sessoes_lidas = _ler_tipo(sessoes_conteudo, "sessoes")
+    pausas_lidas = _ler_tipo(pausas_conteudo, "pausas")
+    sessoes = limpar_sessoes(sessoes_lidas)
+    pausas = limpar_pausas(pausas_lidas)
     intervalos = _intervalos_sessoes(sessoes)
     return {
-        "sessoes_lidas": len(sessoes),
-        "pausas_lidas": len(pausas),
-        "colunas_sessoes": list(sessoes.columns),
-        "colunas_pausas": list(pausas.columns),
+        "sessoes_lidas": len(sessoes_lidas),
+        "sessoes_unicas": len(sessoes),
+        "pausas_lidas": len(pausas_lidas),
+        "pausas_unicas": len(pausas),
+        "chamadas_lidas": int(pausas_lidas["_origem"].eq("chamadas").sum()),
+        "colunas_extras_ignoradas": len(
+            [c for c in sessoes.columns if c not in SESSOES_ALIASES]
+        ),
         "filas": sorted(sessoes["Fila"].astype(str).str.strip().unique()),
         "direcoes_sessoes": sorted(
             sessoes["Direção"].astype(str).str.strip().unique()
         ),
-        "amostra_sessoes": sessoes[
-            ["Agente", "Fila", "Login", "Direção", "Logout", "Tempo Logado"]
-        ].head(5),
+        "amostra_sessoes": sessoes[list(SESSOES_ALIASES)].head(5),
+        "amostra_pausas": pausas[COLUNAS_PAUSAS].head(5),
         "intervalos_validos": len(intervalos),
     }
+
+
+_PREFIXOS_FORMULA = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _neutralizar(valor):
+    if isinstance(valor, str) and valor.startswith(_PREFIXOS_FORMULA):
+        return "'" + valor
+    return valor
+
+
+def neutralizar_formulas(dados):
+    """Evita injeção de fórmula (CSV injection) ao abrir o CSV no Excel."""
+    limpo = dados.copy()
+    limpo.columns = [_neutralizar(str(coluna)) for coluna in limpo.columns]
+    for coluna in limpo.columns:
+        serie = limpo[coluna]
+        if pd.api.types.is_object_dtype(serie) or pd.api.types.is_string_dtype(serie):
+            limpo[coluna] = serie.map(_neutralizar)
+    return limpo
+
+
+def csv_seguro(dados):
+    """Gera os bytes do CSV para download, já neutralizado e com BOM UTF-8."""
+    return (
+        neutralizar_formulas(dados)
+        .to_csv(sep=";", index=False)
+        .encode("utf-8-sig")
+    )
